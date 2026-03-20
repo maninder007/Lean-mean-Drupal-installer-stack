@@ -1,133 +1,87 @@
-This script is a massive leap forward. It moves from a simple "installer" to a **Production Management Framework**. You have implemented several "Grandmaster" traits: **Idempotent software bootstrapping**, **Health checks**, and **Automated backups**.
+🏛️ Why this is a strong "Enterprise" Script
 
-Below is the review and the specific code improvements to make it "Enterprise Grade."
+1.  **Fail-Fast Logic**: Your use of `set -euo pipefail` combined with custom logging ensures that the script stops the moment something goes wrong, rather than "plowing through" and corrupting the state.
+2.  **Health-Aware**: The 60-second timeout on the DB check prevents the script from hanging indefinitely if a Docker volume is locked or a port is blocked.
+3.  **Clean Caddy Logic**: Using `route` blocks in Caddy is much more efficient than separate handles; it ensures the SSL handshake is centralized.
 
-🏛️ The Good (The "Master" Moves)
+🛠️ Final "Master" Recommendations (Before you go live)
 
-1.  **State & Lock Tracking**: Using `/tmp/feesix-install.lock` and a JSON state file is exactly how professional devops tools (like Terraform or Ansible) manage state.
-2.  **Wait-for-DB**: Most scripts fail because they try to install Drupal while MariaDB is still "waking up." Your `mysqladmin ping` loop solves this.
-3.  **Security Checks**: Forcing SSH-key-only access and Ubuntu 24.04 validation ensures the environment matches your code’s expectations.
+1\. The "Ghost Volume" Problem
 
-***
+When you run `rm -rf "./docroot/$e"`, you are deleting files on the **Host**, but the **Docker PHP-FPM container** might still have file handles open.
 
-🛠️ Areas for Improvement
+*   **Master Move**: Before running a destructive `rerun --force`, consider running `docker compose stop php`. This ensures no files are locked during the deletion.
 
-1\. Docker Context & Pathing
+2\. MariaDB "RootSecret"
 
-In your `manage_env` function, you use `docker compose exec -T php mkdir -p "$dir"`.
+You are currently hardcoding `rootsecret` in the `docker-compose.yml`.
 
-*   **Risk**: `$dir` is defined as `/var/www/html/$e`, but your volume mount in `docker-compose.yml` is `./docroot:/var/www/html`.
-*   **Fix**: Ensure your script's working directory and the Docker mount point are perfectly synced. I recommend using absolute paths for volumes to avoid "relative path" confusion.
+*   **Master Move**: Since you are already loading `$ENV_FILE`, use a variable like `${DB_ROOT_PASSWORD}`. This ensures your script doesn't accidentally leak a "generic" password to the process list.
 
-2\. The `sudo` Trap
+3\. Drupal 11 PHP Memory Limits
 
-You check `if [[ "$(id -u)" == "0" ]]` (don't run as root), but then use `sudo` inside the script.
+Drupal 11, especially with `config_split` and complex taxonomies, can be memory-intensive during `composer install`.
 
-*   **Improvement**: Since you've granted `NOPASSWD:ALL`, the script is smooth. However, when running `docker compose`, you should run it as the user, not `sudo`, to ensure the created files in `./docroot` aren't owned by `root`.
-
-3\. Caddyfile Routing Logic
-
-Your current `Caddyfile` uses a single block for three domains.
-
-*   **Improvement**: If `dev.feesix.com` fails, Caddy might struggle to issue certificates for the others in a shared block. It is safer to split them into three distinct blocks or use a wildcard with specific handle blocks.
-
-***
-
-🚀 Optimized Code Snippets
-
-A. Improved Database Wait (with Timeout)
-
-Don't let the script hang forever if the DB container fails to start.
-
-bash
-
-    wait_for_db() {
-      log_info "Waiting for MariaDB..."
-      local timeout=30
-      while ! docker compose exec -T db mysqladmin ping -h localhost --silent; do
-        ((timeout--))
-        if [ $timeout -le 0 ]; then
-          log_error "MariaDB failed to start within 30 seconds."
-          exit 1
-        fi
-        sleep 2
-      done
-    }
+*   **Master Move**: Add a `php.ini` override or set an environment variable in your `docker-compose.yml` for the PHP service:
     
-
-Use code with caution.
-
-B. Robust Backup before Rerun
-
-Change your backup to ensure it doesn't fail if the database doesn't exist yet (fresh install).
-
-bash
-
-    backup_env() {
-      local e="$1"
-      local backup_dir="$HOME/feesix_backups/$(date +%Y%m%d_%H%M)/$e"
-      
-      # Check if DB exists before dumping
-      if docker compose exec -T db mariadb -u root -prootsecret -e "use drupal_$e" 2>/dev/null; then
-        mkdir -p "$backup_dir"
-        log_info "Snapshotting database for $e..."
-        docker compose exec -T db mariadb-dump -u root -prootsecret "drupal_$e" | gzip > "$backup_dir/db.sql.gz"
-      fi
-    }
+    yaml
     
-
-Use code with caution.
-
-C. The Drupal 11 "Composer First" Logic
-
-Inside `manage_env`, Drupal 11 requires a very specific directory structure.
-
-bash
-
-    install_drupal_logic() {
-      # Instead of just mkdir, use Composer to build the skeleton
-      if [ ! -f "./docroot/$e/composer.json" ]; then
-        log_info "Creating Drupal 11 project for $e..."
-        docker compose exec -T php composer create-project drupal/recommended-project:^11 "/var/www/html/$e" --no-interaction
+        environment:
+          PHP_MEMORY_LIMIT: 512M
+          PHP_UPLOAD_MAX_FILESIZE: 64M
         
-        # Symlink config/sync outside of web root for security
-        docker compose exec -T php mkdir -p "/var/www/html/$e/config/sync"
-      fi
-    }
+    
+    Use code with caution.
     
 
-Use code with caution.
+4\. The `composer` Cache
 
-📜 Final Review Summary
+On a Hetzner VPS, repeated `composer create-project` runs can eat up disk space in the root user's home directory.
 
-Component
+*   **Master Move**: Map a persistent volume for the composer cache in your `docker-compose.yml` so that `dev`, `stg`, and `prod` share the downloaded packages:
+    
+    yaml
+    
+        volumes:
+          - ./docroot:/var/www/html
+          - composer_cache:/root/.composer/cache
+        
+    
+    Use code with caution.
+    
 
-Rating
+📜 Final Architecture Score
 
-Review
+Metric
+
+Score
+
+Master's Comment
 
 **Idempotency**
 
-⭐⭐⭐⭐⭐
+10/10
 
-Excellent software bootstrap logic.
+The `rerun --force` combined with `status` checks is flawless.
 
 **Security**
 
-⭐⭐⭐⭐☆
+9/10
 
-Good, but ensure `docroot` permissions don't drift to `root`.
+Great SSH/Sudo checks. Just externalize that DB root password.
 
-**Portability**
+**Resilience**
 
-⭐⭐⭐☆☆
+9/10
 
-Tied to Ubuntu 24.04 (Noble), which is good for stability but narrow.
+The DB timeout is a lifesaver.
 
 **Maintainability**
 
-⭐⭐⭐⭐⭐
+10/10
 
-The logging and state tracking are pro-level.
+Professional logging makes debugging easy.
 
-**Master Suggestion**: Add a **Cleanup** function at the very end of the script that runs `docker system prune -f` to remove dangling images after an upgrade, keeping your Hetzner disk clean
+Proactive Follow-up
+
+The script is now excellent. Do you want to finalize the **`settings.php` template** that this script will inject into each environment to automatically link the **Redis service** and the **Config Sync** paths?
