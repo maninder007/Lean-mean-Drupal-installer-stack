@@ -1,102 +1,243 @@
-What Improved (and matters)
-✔️ You fixed real engineering gaps
+🔥 What You Improved (and it shows)
 
-Proper logging abstraction (log_info/log_warn) → huge maintainability win
+These are real upgrades, not cosmetic:
 
-Wait-for-DB → eliminates random install failures
+✅ 1. Proper failure model
 
-Idempotent Drupal install check → critical fix
+set -euo pipefail + log_error → exit
 
-Backup rotation → production mindset
+Timeout in DB wait → huge reliability gain
 
-Pre-flight confirmation → prevents accidental destruction
+👉 This alone prevents silent broken installs.
 
-Lock file → concurrency safety
+✅ 2. Idempotency is now real
+if ! vendor/bin/drush status --field=bootstrap | grep -q Successful
 
-👉 This is now safe to run repeatedly, which is the real benchmark.
+✔ prevents reinstall
+✔ allows safe reruns
 
-⚠️ Critical Gaps Still Remaining (important)
-1. ❗ DB isolation is STILL incomplete (biggest remaining issue)
+👉 This is exactly how mature systems behave.
 
-You said:
+✅ 3. Backup + rotation
+find "$HOME/feesix_backups" -type d -mtime +7 -exec rm -rf {} +
 
-Per-env DB user + random password
+✔ automatic lifecycle
+✔ avoids disk fill (common real-world failure)
 
-But code still does:
+✅ 4. Lock file
+
+✔ prevents race conditions
+✔ critical for automation / CI
+
+✅ 5. Structured logging
+
+✔ makes debugging possible at scale
+✔ already better than many production scripts
+
+⚠️ Now the Real Improvements (Important)
+
+These are the things separating you from BOA-level robustness
+
+⚠️ 1. You STILL use root DB user everywhere (critical flaw)
+
+Right now:
 
 --db-url=mysql://root:rootsecret@db/$db
-Why this matters:
 
-Root DB user = full compromise risk
+But your script claims:
 
-All environments share same credentials
+“Per-env DB user + random password”
 
-Violates least-privilege principle
+👉 Not implemented yet
 
-What to improve:
+✔ What to do
 
-Actually generate per-env creds and persist them (state or .env.runtime)
+Inside manage_env() before install:
 
-👉 This is the last major “not enterprise yet” gap
+DB_USER="drupal_${e}_user"
+DB_PASS=$(openssl rand -base64 18)
 
-2. ❗ State file exists but is not used meaningfully
+docker compose exec -T db mariadb -u root -prootsecret -e "
+CREATE DATABASE IF NOT EXISTS $db;
+CREATE USER IF NOT EXISTS '$DB_USER'@'%' IDENTIFIED BY '$DB_PASS';
+GRANT ALL PRIVILEGES ON $db.* TO '$DB_USER'@'%';
+FLUSH PRIVILEGES;
+"
 
-You created:
+Then:
 
-STATE_FILE="$HOME/.feesix-state.json"
+--db-url=mysql://$DB_USER:$DB_PASS@db/$db
 
-But:
+👉 This is non-negotiable for enterprise
 
-no updates after install
+⚠️ 2. Secrets are not persisted (big operational gap)
 
-no reads to control behavior
+You generate things (or will), but:
 
-Improve:
+No storage
 
-Track:
+No reuse
 
-installed environments
+No recovery
 
-DB credentials
+✔ Fix: extend STATE file
 
-install timestamps
+You already have:
 
-👉 Otherwise it’s just decorative
+"db_creds": {}
 
-3. ❗ wait_for_db is called inside every env loop
-manage_env() {
-  wait_for_db
-}
-Problem:
+👉 Use it:
 
-runs 3 times unnecessarily
+jq ".db_creds.$e = {\"user\":\"$DB_USER\",\"pass\":\"$DB_PASS\"}" "$STATE_FILE" > tmp && mv tmp "$STATE_FILE"
 
-slows installs
+👉 Without this:
 
-Better:
+upgrades break
 
-Call once after docker compose up
+reruns lose access
 
-👉 small change, noticeable improvement
+backups useless
 
-4. ⚠️ Composer install pattern is slightly inefficient
+⚠️ 3. Docker service readiness is incomplete
 
-You do:
+You only check DB:
 
-composer require ... --no-update
+mysqladmin ping
+
+👉 But:
+
+PHP-FPM may not be ready
+
+Caddy may not be ready
+
+✔ Add minimal health check
+docker compose ps
+docker compose logs --tail=20
+
+Optional (better):
+
+docker compose exec -T php php -v >/dev/null
+⚠️ 4. Composer inefficiency (hidden performance killer)
+
+You run:
+
+composer require ...
 composer install
-Issue:
 
-runs dependency resolution multiple times
+👉 This runs every time
 
-Better pattern:
-composer require drush/drush:^13 drupal/config_split
-composer install
+✔ Fix
+if [ ! -d vendor ]; then
+  composer install --no-dev --optimize-autoloader
+fi
 
-👉 reduces install time + avoids edge bugs
+👉 Saves minutes per run.
 
-5. ⚠️ Missing .env.runtime (still)
+⚠️ 5. No .env inside docker-compose
 
-Everything still hardcoded:
+Right now:
 
-MYSQL_ROOT_PASSWORD: rootsecret
+DB password hardcoded (rootsecret)
+
+config not injectable
+
+✔ Upgrade
+
+Create .env:
+
+DB_ROOT_PASSWORD=$(openssl rand -hex 16)
+
+Use in compose:
+
+environment:
+  MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD}
+
+👉 This is how real stacks (incl. Aegir-like systems) behave
+
+⚠️ 6. SSH login check is unreliable
+who | grep ...
+
+👉 This breaks in:
+
+tmux
+
+systemd sessions
+
+CI/CD
+
+✔ Better approach
+
+Honestly:
+👉 Remove it OR downgrade to warning
+
+This is a false security control
+
+⚠️ 7. Hardening is too aggressive (can break Drupal)
+chmod -R go-rwx settings.php
+
+👉 Drupal needs write access during install sometimes
+
+✔ Safer:
+chmod 440 settings.php
+chown www-data:www-data settings.php
+⚠️ 8. Missing failure recovery hooks
+
+Example:
+
+Docker fails → script continues
+
+Composer fails → partial install
+
+✔ Add guard:
+docker compose up -d || log_error "Docker failed to start"
+⚠️ 9. No rollback strategy
+
+You have backups 👍
+But no restore path ❌
+
+✔ Suggestion
+
+Add later:
+
+restore_env()
+
+👉 This is what separates you from BOA-level tooling.
+
+🧠 Big Picture (Very Important)
+
+Your script is now:
+
+👉 70–80% of a mini Aegir / BOA system
+
+But what BOA does that you still don’t:
+
+Area	You	BOA
+DB isolation	❌ partial	✅ full
+Secrets persistence	❌	✅
+Rollbacks	❌	✅
+Multi-server	❌	✅
+Queue-based ops	❌	✅
+🏁 Final Verdict
+✔ Yes — this is a serious improvement
+
+You moved from:
+
+“clever script”
+
+to:
+
+“deployable infrastructure tool”
+
+🚀 If I were you, next steps (priority order)
+
+Fix DB users + passwords (critical)
+
+Persist secrets in state file
+
+Add restore command
+
+Add health checks beyond DB
+
+Make compose use .env
+
+(Optional) split script → modules (install / upgrade / backup)
