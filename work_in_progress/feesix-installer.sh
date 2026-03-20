@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 # =============================================================================
-# Feezix Drupal 11 Multi-Environment Installer – Enterprise Edition (Ubuntu 24.04)
+# Feezix Drupal 11 Multi-Environment Installer – Enterprise Edition v1 (Ubuntu 24.04)
 # =============================================================================
 # Security & Features:
-#   • Non-root sudo user with SSH key only
-#   • Automatic NOPASSWD sudo
-#   • Per-env DB user + random password
-#   • State tracking + lock file
-#   • Wait-for-DB + health checks
-#   • Idempotent Drupal install
-#   • Backup + rotation before destructive rerun
-#   • Pre-flight summary + confirmation
+# • Non-root sudo user with SSH key only
+# • Automatic NOPASSWD sudo
+# • Per-env DB user + random password
+# • State tracking + lock file
+# • Wait-for-DB + health checks
+# • Idempotent Drupal install
+# • Backup + rotation before rerun --force
+# • Pre-flight summary + confirmation
 # =============================================================================
 
 set -euo pipefail
@@ -18,7 +18,7 @@ set -euo pipefail
 # Logging with levels
 log_info()  { echo "[INFO]  $(date '+%Y-%m-%d %H:%M:%S') $*" | tee -a "$HOME/feesix-install.log"; }
 log_warn()  { echo "[WARN]  $(date '+%Y-%m-%d %H:%M:%S') $*" | tee -a "$HOME/feesix-install.log"; }
-log_error() { echo "[ERROR] $(date '+%Y-%m-%d %H:%M:%S') $*" | tee -a "$HOME/feesix-install.log"; }
+log_error() { echo "[ERROR] $(date '+%Y-%m-%d %H:%M:%S') $*" | tee -a "$HOME/feesix-install.log"; exit 1; }
 
 log_info "Feezix installer started (mode: ${1:-fresh})"
 
@@ -32,18 +32,15 @@ LOCK_FILE="/tmp/feesix-install.lock"
 # ─── 0. Security & Validation ────────────────────────────────────────────────
 if [[ "$(id -u)" == "0" ]]; then
   log_error "Do NOT run as root. Log in as sudo user via SSH key."
-  exit 1
 fi
 
 if [[ -z "${SUDO_USER:-}" ]]; then
   log_error "Run with sudo: sudo ./feesix-installer.sh fresh"
-  exit 1
 fi
 
-# SSH key check
+# SSH key login check
 if who | grep -q "$(whoami).*(:0|pts/0)"; then
   log_error "Password/console login detected. Use SSH key only. Aborting."
-  exit 1
 fi
 
 # Passwordless sudo (idempotent)
@@ -57,13 +54,11 @@ fi
 # Ubuntu 24.04 only
 if ! lsb_release -cs | grep -q "noble"; then
   log_error "Only Ubuntu 24.04 (noble) supported. Detected: $(lsb_release -ds)"
-  exit 1
 fi
 
 # Lock file
 if [[ -f "$LOCK_FILE" ]]; then
-  log_error "Another instance running. Remove $LOCK_FILE if stuck."
-  exit 1
+  log_error "Another instance is running. Remove $LOCK_FILE if stuck."
 fi
 touch "$LOCK_FILE"
 trap 'rm -f "$LOCK_FILE"' EXIT
@@ -123,7 +118,7 @@ source "$ENV_FILE"
 
 # State file
 if [[ ! -f "$STATE_FILE" ]]; then
-  echo '{"installed":false,"timestamp":"","environments":[],"last_mode":""}' > "$STATE_FILE"
+  echo '{"installed":false,"timestamp":"","environments":[],"last_mode":"","db_creds":{}}' > "$STATE_FILE"
 fi
 
 # ─── 3. Backup Function ──────────────────────────────────────────────────────
@@ -150,7 +145,13 @@ backup_env() {
 # ─── 4. Wait for DB Health Check ─────────────────────────────────────────────
 wait_for_db() {
   log_info "Waiting for MariaDB to be ready..."
+  local timeout=60
   until docker compose exec -T db mysqladmin ping -h localhost --silent; do
+    ((timeout--))
+    if [ $timeout -le 0 ]; then
+      log_error "MariaDB failed to start within 60 seconds."
+      exit 1
+    fi
     log_warn "DB not ready yet, waiting 3s..."
     sleep 3
   done
@@ -160,7 +161,6 @@ wait_for_db() {
 # ─── 5. Docker + Caddy Setup ────────────────────────────────────────────────
 setup_docker() {
   log_info "Generating docker-compose.yml and Caddyfile..."
-
   cat > docker-compose.yml <<EOT
 version: "3.9"
 services:
