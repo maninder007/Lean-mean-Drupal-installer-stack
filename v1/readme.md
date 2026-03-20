@@ -12,7 +12,7 @@ This version is now production-hardened:
 *   Final hardening pass improved
 *   Logging with levels
 
-*   ### 2\. Enterprise-Grade Documentation (Single-Page README.md)
+  ### 2\. Enterprise-Grade Documentation (Single-Page README.md)
 
 Markdown
 
