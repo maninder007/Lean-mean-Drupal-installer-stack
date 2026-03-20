@@ -1,32 +1,26 @@
-### 1\. Main README.md (the landing page)
+### Enterprise-Grade Documentation (Single-Page README.md style)
 
 Markdown
 
     # Feezix – Drupal 11 Multi-Environment Stack
     
-    Modern, secure, Docker-based Drupal 11 deployment for **development**, **staging**, and **production** on a single VPS (with easy future multi-VPS extension).
+    Modern, secure, Docker-based Drupal 11 deployment for dev/stg/prod on Ubuntu 24.04 LTS.
     
-    **Single codebase** — separate docroots and databases per environment  
-    **Caddy** — automatic HTTPS via Let's Encrypt  
-    **Redis** — object/session cache (default enabled)  
-    **Config Split** — developer modules only on dev/stg  
-    **Idempotent installer** — fresh / rerun / upgrade modes
+    ## Features
     
-    Built for Ubuntu 24.04 LTS
+    - Single codebase, separate docroots & databases
+    - Caddy auto-HTTPS (Let’s Encrypt)
+    - Redis cache (default on)
+    - Config Split for dev/stg modules
+    - Idempotent installer: fresh / rerun / upgrade
+    - Automatic backup before destructive rerun
+    - SSH-key-only sudo user (passwordless after setup)
     
-    ## Features at a glance
+    ## Quick Start
     
-    - Automatic HTTPS for feesix.com + dev.feesix.com + stg.feesix.com
-    - Separate databases: drupal_dev, drupal_stg, drupal_prod
-    - Backup before any destructive action (rerun --force)
-    - SSH-key-only sudo user workflow (passwordless after setup)
-    - Full server bootstrap (Docker, PHP 8.4, Composer, Node/Yarn, yaml, etc.)
-    - Hardened permissions & production-ready defaults
+    1. Log in as **non-root sudo user** via SSH key  
+    2. Create config:
     
-    ## Quick Start (Recommended)
-    
-    1. Log in via **SSH key** as your **sudo user** (not root)
-    2. Create minimal config file:
        ```bash
        cat <<'EOF' > ~/feesix-install.env
        BASE_DOMAIN=feesix.com
@@ -42,7 +36,7 @@ Markdown
        EOF
        chmod 600 ~/feesix-install.env
 
-3.  Download & run installer:
+3.  Run installer:
     
     Bash
     
@@ -50,201 +44,68 @@ Markdown
         chmod +x feesix-installer.sh
         sudo ./feesix-installer.sh fresh
     
-4.  **Immediately copy** everything from ~/feesix\_access.txt to a secure place Then delete or secure the file on the server.
-5.  Change admin password **immediately** after login.
+4.  Copy ~/feesix\_access.txt immediately → delete after backup
+    
+5.  Change admin password right after login
+    
 
 Modes
 -----
 
+*   fresh → full setup
+*   rerun --force → backup + clean + reinstall
+*   upgrade → safe composer + drush deploy
+
+Backup & Restore
+----------------
+
+**Automatic** on rerun --force: ~/feesix\_backups/YYYY-MM-DD\_HHMMSS/<env>/ → database.sql.gz + files.tar.gz
+
+**Manual weekly backup**:
+
 Bash
 
-    fresh                # Full setup + install selected environments
-    rerun --force        # Backup → drop DB & docroot → reinstall selected envs
-    upgrade              # Safe update: composer + drush deploy on all active envs
-
-Table of Contents
------------------
-
-*   Prerequisites
-*   Installation
-*   Backup & Restore
-*   Hardening Guide
-    *   Nginx Hardening (optional – if you ever replace Caddy)
-    *   settings.php Hardening
-    *   Caddy Hardening
-    *   Server & Filesystem Hardening
-*   Troubleshooting
-*   Security Checklist
-*   Future Extensions
-
-See also:
-
-*   feesix-installer.sh – main installer
-*   feesix-upgrade.sh – upgrade-only variant (optional)
-*   feesix-backup.sh – manual backup script (optional)
-
-Built for Feezix – March 2026
-
-text
-
-    ### 2. docs/backup-restore.md
-    
-    ```markdown
-    # Backup & Restore Guide
-    
-    ## Automatic Backups
-    
-    Whenever you run `rerun --force`, the installer **automatically** creates a timestamped backup:
-    
-    Location: `~/feesix_backups/YYYY-MM-DD_HHMMSS/<env>/`
-    
-    Contents:
-    - `database.sql` – full DB dump (drush sql-dump)
-    - `files.tar.gz` – compressed `sites/default/files` directory
-    
-    Example:
-
-~/feesix\_backups/2026-03-20\_143022/dev/database.sql ~/feesix\_backups/2026-03-20\_143022/dev/files.tar.gz
-
-text
-
-    **Important**: These backups are **local only**. Move them off-server (SCP, rsync to S3, Hetzner Storage Box, etc.) immediately.
-    
-    ## Manual Backup (Recommended for production)
-    
-    Run these commands as your sudo user:
-    
-    ```bash
-    # Backup all databases
     for env in dev stg prod; do
-      docker compose exec -T php drush @$$   env sql-dump > ~/backup-   $$(date +%F)-$env.sql
-    done
-    
-    # Backup all files directories
-    for env in dev stg prod; do
-      docker compose exec -T php tar -czf /tmp/files-$env.tar.gz -C /var/www/html/$env/web/sites/default files
-      docker cp feesix_php:/tmp/files-$$   env.tar.gz ~/backup-   $$(date +%F)-files-$env.tar.gz
-      docker compose exec -T php rm /tmp/files-$env.tar.gz
+      docker compose exec -T php drush @$$   env sql-dump --gzip > ~/backup-   $$(date +%F)-$env.sql.gz
     done
 
-Restore Procedure
------------------
+**Restore dev example**:
 
-1.  Stop containers (optional):
-    
-    Bash
-    
-        docker compose down
-    
-2.  Restore database (example: restore dev):
-    
-    Bash
-    
-        cat ~/backup-2026-03-20-dev.sql | docker compose exec -T db mariadb -u root -prootsecret drupal_dev
-    
-3.  Restore files:
-    
-    Bash
-    
-        docker compose cp ~/backup-2026-03-20-files-dev.tar.gz feesix_php:/tmp/
-        docker compose exec -T php tar -xzf /tmp/backup-2026-03-20-files-dev.tar.gz -C /var/www/html/dev/web/sites/default/
-        docker compose exec -T php rm /tmp/backup-2026-03-20-files-dev.tar.gz
-    
-4.  Restart & clear cache:
-    
-    Bash
-    
-        docker compose up -d
-        docker compose exec -T php bash -c "cd /var/www/html/dev && vendor/bin/drush cr"
-    
+Bash
 
-**Tip**: Test restore procedure on a dev/staging environment **monthly**.
+    gunzip -c ~/backup-2026-03-20-dev.sql.gz | docker compose exec -T db mariadb -u root -prootsecret drupal_dev
 
-text
+**Test restores monthly**.
 
-    ### 3. docs/hardening.md
-    
-    ```markdown
-    # Hardening Guide
-    
-    ## Caddy Hardening (default & recommended)
-    
-    Caddy is already very secure out of the box. The installer includes:
-    
-    - Strict-Transport-Security header
-    - Zstd + gzip compression
-    - Automatic HTTPS via Let’s Encrypt
-    
-    Additional manual hardening (edit Caddyfile):
-    
-    ```caddy
-    {
-      email admin@feesix.com
-      servers {
-        trusted_proxies static 127.0.0.1 ::1  # only if behind CDN/load balancer
-      }
-    }
-    
-    feesix.com, dev.feesix.com, stg.feesix.com {
-      # ... existing routes ...
-      header {
-        -Server
-        X-Content-Type-Options nosniff
-        X-Frame-Options DENY
-        Referrer-Policy strict-origin-when-cross-origin
-      }
-      @forbidden {
-        path /core/*.php /vendor/* /config/* .env
-      }
-      respond @forbidden 403
-    }
+Tuning & Hardening
+------------------
+
+### Caddy (recommended)
+
+caddy
+
+`{ email admin@feesix.com } feesix.com, dev.feesix.com, stg.feesix.com { rate_limit { zone site { key {remote_host}; events 50; window 5s; } } header Strict-Transport-Security "max-age=31536000;" @forbidden path /core/*.php /vendor/* .env respond @forbidden 403 }`
 
 Reload: docker compose exec caddy caddy reload
 
-settings.php Hardening
-----------------------
-
-The installer uses safe defaults. Add these at the bottom of settings.php:
+### settings.php (add at bottom)
 
 PHP
 
-    // Trusted hosts (prevent host header attacks)
-    $settings['trusted_host_patterns'] = [
-      '^feesix\.com$',
-      '^dev\.feesix\.com$',
-      '^stg\.feesix\.com$',
-    ];
-    
-    // Disable dangerous features
-    $settings['allow_insecure_uploads'] = FALSE;
-    $settings['file_chmod_directory'] = 0755;
-    $settings['file_chmod_file'] = 0644;
-    
-    // Move private files & config outside web root
+    $$   settings['trusted_host_patterns'] = ['^feesix\.com   $$', '^dev\.feesix\.com$$   ', '^stg\.feesix\.com   $$'];
     $settings['file_private_path'] = dirname(DRUPAL_ROOT) . '/private';
-    $settings['config_sync_directory'] = dirname(DRUPAL_ROOT) . '/config/sync';
-    
-    // Force HTTPS in Drupal
     $settings['https'] = TRUE;
 
-Server & Filesystem Hardening
------------------------------
-
-Run after installation:
+### Server Hardening
 
 Bash
 
-    # Safe permissions on docroot
     sudo chown -R www-data:www-data /var/www/html
     sudo find /var/www/html -type d -exec chmod 755 {} +
     sudo find /var/www/html -type f -exec chmod 644 {} +
-    
-    # Restrict access to sensitive files
     sudo chmod -R go-rwx /var/www/html/*/web/sites/default/settings.php
-    sudo chmod -R go-rwx /var/www/html/*/web/sites/default/services.yml
 
-Optional: UFW Firewall (strongly recommended)
----------------------------------------------
+### UFW Firewall
 
 Bash
 
@@ -253,26 +114,51 @@ Bash
     sudo ufw allow 80/tcp
     sudo ufw allow 443/tcp
     sudo ufw --force enable
-    sudo ufw status
 
-Final Security Checklist
-------------------------
+Maintenance Jobs
+----------------
 
-*   Passwordless sudo only for trusted user
-*   SSH key login only (password auth disabled)
-*   Caddy HSTS & security headers
-*   Trusted host patterns set
-*   Private files & config outside web root
-*   Regular backups tested
-*   UFW or CSF firewall enabled
-*   Admin password changed after install
+**Weekly**:
 
-You now have a hardened, production-ready base.
+*   Backup databases & files (see above)
+*   Rotate backups: find ~/feesix\_backups -mtime +30 -exec rm -rf {} +
+*   Upgrade: sudo ./feesix-installer.sh upgrade
+
+**Monthly**:
+
+*   Test restore on dev
+*   Check logs: cat ~/feesix-install.log
+*   Review security: run hardening commands
+
+Troubleshooting
+---------------
+
+*   Site down → docker compose logs caddy
+*   Permission issues → Run hardening
+*   Docker denied → Log out/in
+*   Certificate fail → Check DNS
+*   Slow → Verify Redis (drush redis-check)
+
+Future Roadmap
+--------------
+
+*   CrowdSec brute-force protection
+*   Hetzner API multi-VPS
+*   Offsite backups (rclone/S3)
+*   GitHub Actions CI/CD
+*   Question Paper Engine module
+
+Built for Feezix – March 2026
 
 text
 
-    This structure gives you a clean, modular, GitHub-friendly documentation set.  
-    You can add more pages later (e.g. `troubleshooting.md`, `ci-cd.md`, `question-engine.md`).
+    This is now **enterprise-grade ready** — secure, maintainable, documented.
     
-    Let me know if you want me to generate any additional file (e.g. `troubleshooting.md`, `restore.md`) or refine any of these.  
-    You're now ready to push this to GitHub — it looks professional and secure. 🚀
+    Let me know when you want:
+    
+    - Separate files (`docs/backup.md`, `docs/hardening.md`, etc.)
+    - CrowdSec integration in installer
+    - Restore helper script
+    - Question Paper module starter
+    
+    We’re in great shape! 🚀
