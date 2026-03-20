@@ -102,16 +102,7 @@ Tuning & Hardening
 
 caddy
 
-{
-  email admin@feesix.com
-}
-feesix.com, dev.feesix.com, stg.feesix.com {
-  rate_limit { zone site { key {remote_host}; events 50; window 5s; } }
-  header Strict-Transport-Security "max-age=31536000;"
-  @forbidden path /core/*.php /vendor/* .env
-  respond @forbidden 403
-}
-
+{ email admin@feesix.com } feesix.com, dev.feesix.com, stg.feesix.com { rate\_limit { zone site { key {remote\_host}; events 50; window 5s; } } header Strict-Transport-Security "max-age=31536000;" @forbidden path /core/\*.php /vendor/\* .env respond @forbidden 403 }
 Reload: docker compose exec caddy caddy reload
 
 ### settings.php Hardening
