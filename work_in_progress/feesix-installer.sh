@@ -107,4 +107,164 @@ if ! command -v composer &>/dev/null; then
 fi
 sudo composer self-update --2 --quiet
 
-# Node.js LTS + Yarn 
+# Node.js LTS + Yarn 4.x
+if ! command -v node &>/dev/null || ! node -v | grep -q "v20"; then
+  curl -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash -
+  sudo apt-get install -y -qq nodejs
+  sudo corepack enable
+  sudo corepack prepare yarn@stable --activate
+fi
+
+# ─── 2. Load user config ─────────────────────────────────────────────────────
+ENV_FILE="$HOME/feesix-install.env"
+[[ -f "$ENV_FILE" ]] || { echo "Missing $ENV_FILE – create it first"; exit 1; }
+source "$ENV_FILE"
+
+# ─── 3. Backup function (used before destructive rerun) ──────────────────────
+backup_env() {
+  local e="$1" db="drupal_$e" dir="/var/www/html/$e"
+  local backup_dir="$HOME/feesix_backups/$(date +%Y-%m-%d_%H%M%S)/$e"
+  mkdir -p "$backup_dir"
+  echo "Backing up $e → $backup_dir"
+
+  # DB dump
+  docker compose exec -T php drush @$e sql-dump --result-file=/tmp/backup.sql >/dev/null 2>&1 || true
+  docker cp feesix_php:/tmp/backup.sql "$backup_dir/database.sql" 2>/dev/null || true
+  docker compose exec -T php rm -f /tmp/backup.sql 2>/dev/null || true
+
+  # Files
+  if docker compose exec -T php test -d "$dir/web/sites/default/files"; then
+    docker compose exec -T php tar -czf /tmp/files.tar.gz -C "$dir/web/sites/default" files
+    docker cp feesix_php:/tmp/files.tar.gz "$backup_dir/files.tar.gz"
+    docker compose exec -T php rm -f /tmp/files.tar.gz
+  fi
+}
+
+# ─── 4. Docker + Caddy Setup ────────────────────────────────────────────────
+setup_docker() {
+  cat > docker-compose.yml <<EOT
+version: "3.9"
+services:
+  caddy:
+    image: caddy:2.8-alpine
+    ports: ["80:80", "443:443"]
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    restart: unless-stopped
+
+  php:
+    image: drupal:11-php${PHP_VERSION}-fpm
+    volumes:
+      - ./docroot:/var/www/html
+    depends_on: [db, redis]
+
+  db:
+    image: mariadb:${MARIADB_VERSION}
+    environment:
+      MYSQL_ROOT_PASSWORD: rootsecret
+    volumes:
+      - db_data:/var/lib/mysql
+
+  redis:
+    image: redis:7-alpine
+    ${USE_REDIS:+command: --save 60 1 --loglevel warning}
+
+volumes:
+  caddy_data:
+  caddy_config:
+  db_data:
+EOT
+
+  cat > Caddyfile <<EOT
+{
+  email ${LETSENCRYPT_EMAIL:-${DRUPAL_ADMIN_EMAIL}}
+}
+
+${BASE_DOMAIN}, dev.${BASE_DOMAIN}, stg.${BASE_DOMAIN} {
+  @dev host dev.${BASE_DOMAIN}
+  @stg host stg.${BASE_DOMAIN}
+  @prod host ${BASE_DOMAIN}
+
+  route @dev { root * /var/www/html/dev/web; php_fastcgi php:9000; file_server }
+  route @stg { root * /var/www/html/stg/web; php_fastcgi php:9000; file_server }
+  route @prod { root * /var/www/html/prod/web; php_fastcgi php:9000; file_server }
+
+  encode zstd gzip
+  header Strict-Transport-Security "max-age=31536000;"
+}
+EOT
+
+  docker compose up -d --remove-orphans
+}
+
+# ─── 5. Manage Environment ──────────────────────────────────────────────────
+manage_env() {
+  local e="$1" db="drupal_$e" dir="/var/www/html/$e"
+
+  if [[ "$MODE" == "rerun" && "$FORCE" == true ]]; then
+    backup_env "$e"
+    echo "Force rerun: dropping DB $db and docroot $e"
+    docker compose exec -T db mariadb -u root -prootsecret -e "DROP DATABASE IF EXISTS $db; CREATE DATABASE $db;"
+    rm -rf "./docroot/$e" || true
+  fi
+
+  docker compose exec -T php mkdir -p "$dir"
+
+  docker compose exec -T php bash -c "
+    cd $dir &&
+    [ ! -f composer.json ] && composer create-project drupal/recommended-project:$DRUPAL_VERSION . --no-interaction
+    composer require drush/drush:^13 drupal/config_split --no-update
+    composer install --no-dev --optimize-autoloader
+    vendor/bin/drush site:install standard -y \
+      --db-url=mysql://root:rootsecret@db/$db \
+      --site-name='$DRUPAL_SITE_PREFIX – ${e^}' \
+      --account-name='$DRUPAL_ADMIN_USER' \
+      --account-pass='$DRUPAL_ADMIN_PASS' \
+      --account-mail='$DRUPAL_ADMIN_EMAIL' \
+      --locale=en
+    vendor/bin/drush en config_split -y
+    vendor/bin/drush cr
+  "
+}
+
+# ─── Final Hardening Pass ────────────────────────────────────────────────────
+harden_docroot() {
+  echo "Applying final security hardening..."
+  sudo chown -R www-data:www-data /var/www/html
+  sudo find /var/www/html -type d -exec chmod 755 {} +
+  sudo find /var/www/html -type f -exec chmod 644 {} +
+}
+
+# ─── Main ────────────────────────────────────────────────────────────────────
+main() {
+  if [[ "$MODE" == "fresh" ]]; then
+    setup_docker
+  fi
+
+  for env in dev stg prod; do
+    v="INSTALL_${env^^}"
+    [[ "${!v}" == true ]] && manage_env "$env"
+  done
+
+  if [[ "$MODE" == "upgrade" ]]; then
+    docker compose exec -T php composer update --no-dev
+    for env in dev stg prod; do
+      v="INSTALL_${env^^}"
+      [[ "${!v}" == true ]] && docker compose exec -T php bash -c "cd /var/www/html/$env && vendor/bin/drush deploy -y"
+    done
+  fi
+
+  harden_docroot
+
+  echo "Feezix stack ready!"
+  echo "Sites:"
+  echo "  • https://$BASE_DOMAIN           (production)"
+  echo "  • https://dev.$BASE_DOMAIN       (development)"
+  echo "  • https://stg.$BASE_DOMAIN       (staging)"
+  echo "Credentials & keys: ~/feesix_access.txt"
+  [[ "$MODE" == "rerun" && "$FORCE" == true ]] && echo "Backups saved in ~/feesix_backups/"
+}
+
+main "$@"
