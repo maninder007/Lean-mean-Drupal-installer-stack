@@ -1,42 +1,89 @@
-### Enterprise-Grade Documentation (Single-Page README.md style)
+### 1\. Updated Installer Script (feesix-installer.sh)
+
+This version includes:
+
+*   Per-environment DB users + random passwords (no root usage in Drupal)
+*   Wait-for-DB health check with timeout
+*   True idempotent install (skips if site already bootstrapped)
+*   State file usage to skip redundant steps
+*   Lock file to prevent parallel runs
+*   Backup with \--single-transaction --gzip + rotation
+*   Pre-flight summary + confirmation prompt### 2\. Enterprise-Grade Documentation (Single-Page Markdown)
 
 Markdown
 
     # Feezix – Drupal 11 Multi-Environment Stack
     
-    Modern, secure, Docker-based Drupal 11 deployment for dev/stg/prod on Ubuntu 24.04 LTS.
+    Modern, secure, Docker-based Drupal 11 deployment for development, staging, and production on one Ubuntu 24.04 LTS VPS.
     
     ## Features
     
-    - Single codebase, separate docroots & databases
+    - Single codebase, separate docroots & databases per environment
     - Caddy auto-HTTPS (Let’s Encrypt)
-    - Redis cache (default on)
+    - Redis object/session cache (default on)
     - Config Split for dev/stg modules
     - Idempotent installer: fresh / rerun / upgrade
     - Automatic backup before destructive rerun
     - SSH-key-only sudo user (passwordless after setup)
     
-    ## Quick Start
+    ## System Requirements
     
-    1. Log in as **non-root sudo user** via SSH key  
-    2. Create config:
+    - OS: Ubuntu 24.04 LTS only
+    - CPU: 4 cores minimum (8+ recommended)
+    - RAM: 8 GB minimum (16 GB+ for production)
+    - Storage: 40 GB SSD minimum (80 GB+ recommended)
+    - Access: SSH key login as non-root sudo user (root forbidden)
     
+    ## How to Prepare the Server
+    
+    1. Log in as root (only for initial setup)
+    2. Create sudo user + SSH key:
        ```bash
-       cat <<'EOF' > ~/feesix-install.env
-       BASE_DOMAIN=feesix.com
-       INSTALL_DEV=true
-       INSTALL_STG=true
-       INSTALL_PROD=true
-       DRUPAL_ADMIN_USER=admin
-       DRUPAL_ADMIN_PASS=changeme123!
-       DRUPAL_ADMIN_EMAIL=admin@feesix.com
-       USE_LETSENCRYPT=true
-       LETSENCRYPT_EMAIL=admin@feesix.com
-       USE_REDIS=true
-       EOF
-       chmod 600 ~/feesix-install.env
+       adduser --disabled-password --gecos "" feezix
+       usermod -aG sudo feezix
+       mkdir -p /home/feezix/.ssh
+       chmod 700 /home/feezix/.ssh
+       touch /home/feezix/.ssh/authorized_keys
+       chmod 600 /home/feezix/.ssh/authorized_keys
+       chown -R feezix:feezix /home/feezix/.ssh
+       echo "feezix ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/feezix
+       chmod 440 /etc/sudoers.d/feezix
 
-3.  Run installer:
+3.  Upload your public key to /home/feezix/.ssh/authorized\_keys
+4.  Disable root & password login:
+    
+    Bash
+    
+        nano /etc/ssh/sshd_config
+        # Set:
+        PermitRootLogin no
+        PasswordAuthentication no
+        systemctl restart ssh
+    
+5.  Log out → log back in as feezix via SSH key
+
+How to Install
+--------------
+
+1.  Create config:
+    
+    Bash
+    
+        cat <<'EOF' > ~/feesix-install.env
+        BASE_DOMAIN=feesix.com
+        INSTALL_DEV=true
+        INSTALL_STG=true
+        INSTALL_PROD=true
+        DRUPAL_ADMIN_USER=admin
+        DRUPAL_ADMIN_PASS=changeme123!
+        DRUPAL_ADMIN_EMAIL=admin@feesix.com
+        USE_LETSENCRYPT=true
+        LETSENCRYPT_EMAIL=admin@feesix.com
+        USE_REDIS=true
+        EOF
+        chmod 600 ~/feesix-install.env
+    
+2.  Run installer:
     
     Bash
     
@@ -44,43 +91,13 @@ Markdown
         chmod +x feesix-installer.sh
         sudo ./feesix-installer.sh fresh
     
-4.  Copy ~/feesix\_access.txt immediately → delete after backup
-    
-5.  Change admin password right after login
-    
-
-Modes
------
-
-*   fresh → full setup
-*   rerun --force → backup + clean + reinstall
-*   upgrade → safe composer + drush deploy
-
-Backup & Restore
-----------------
-
-**Automatic** on rerun --force: ~/feesix\_backups/YYYY-MM-DD\_HHMMSS/<env>/ → database.sql.gz + files.tar.gz
-
-**Manual weekly backup**:
-
-Bash
-
-    for env in dev stg prod; do
-      docker compose exec -T php drush @$$   env sql-dump --gzip > ~/backup-   $$(date +%F)-$env.sql.gz
-    done
-
-**Restore dev example**:
-
-Bash
-
-    gunzip -c ~/backup-2026-03-20-dev.sql.gz | docker compose exec -T db mariadb -u root -prootsecret drupal_dev
-
-**Test restores monthly**.
+3.  Copy ~/feesix\_access.txt immediately → delete after backup
+4.  Change admin password right after login
 
 Tuning & Hardening
 ------------------
 
-### Caddy (recommended)
+### Caddy Tuning
 
 caddy
 
@@ -88,7 +105,9 @@ caddy
 
 Reload: docker compose exec caddy caddy reload
 
-### settings.php (add at bottom)
+### settings.php Hardening
+
+Add at bottom:
 
 PHP
 
@@ -96,7 +115,7 @@ PHP
     $settings['file_private_path'] = dirname(DRUPAL_ROOT) . '/private';
     $settings['https'] = TRUE;
 
-### Server Hardening
+### Server & Filesystem Hardening
 
 Bash
 
@@ -115,29 +134,59 @@ Bash
     sudo ufw allow 443/tcp
     sudo ufw --force enable
 
-Maintenance Jobs
+Backup & Restore
 ----------------
 
-**Weekly**:
+### Automatic Backups (on rerun --force)
 
-*   Backup databases & files (see above)
+~/feesix\_backups/YYYY-MM-DD\_HHMMSS/<env>/ → database.sql.gz + files.tar.gz
+
+### Manual Backup
+
+Bash
+
+    for env in dev stg prod; do
+      docker compose exec -T php drush @$$   env sql-dump --gzip > ~/backup-   $$(date +%F)-$env.sql.gz
+    done
+
+### Restore Example (dev)
+
+Bash
+
+    gunzip -c ~/backup-2026-03-20-dev.sql.gz | docker compose exec -T db mariadb -u root -prootsecret drupal_dev
+
+Maintenance & Operations
+------------------------
+
+### Weekly
+
+*   Backup databases & files
 *   Rotate backups: find ~/feesix\_backups -mtime +30 -exec rm -rf {} +
 *   Upgrade: sudo ./feesix-installer.sh upgrade
 
-**Monthly**:
+### Monthly
 
 *   Test restore on dev
 *   Check logs: cat ~/feesix-install.log
-*   Review security: run hardening commands
+*   Run hardening commands
 
-Troubleshooting
----------------
+### Troubleshooting
 
 *   Site down → docker compose logs caddy
 *   Permission issues → Run hardening
 *   Docker denied → Log out/in
 *   Certificate fail → Check DNS
-*   Slow → Verify Redis (drush redis-check)
+
+### Security Checklist
+
+*   SSH key login only
+*   Passwordless sudo
+*   Caddy HSTS & headers
+*   Trusted host patterns
+*   Private files outside web root
+*   Backups tested
+*   UFW enabled
+*   Admin password changed
 
 Future Roadmap
 --------------
@@ -152,13 +201,9 @@ Built for Feezix – March 2026
 
 text
 
-    This is now **enterprise-grade ready** — secure, maintainable, documented.
+    This is your **v1 enterprise-grade installer + documentation**.
     
-    Let me know when you want:
+    Copy the script → save as `feesix-installer.sh`  
+    Copy the Markdown → save as `README.md`
     
-    - Separate files (`docs/backup.md`, `docs/hardening.md`, etc.)
-    - CrowdSec integration in installer
-    - Restore helper script
-    - Question Paper module starter
-    
-    We’re in great shape! 🚀
+    Let me know when you test it or want v1.1 (CrowdSec, ufw auto-setup, restore helper script)
